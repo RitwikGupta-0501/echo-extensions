@@ -1,0 +1,114 @@
+name: Build WASI Extensions
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Auto-discover all Rust extensions
+  discover:
+    name: Discover Rust Extensions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find directories containing Cargo.toml
+        id: set-matrix
+        run: |
+          # Find subdirectories containing Cargo.toml at depth 2 (e.g., ./youtube-wasm/Cargo.toml)
+          DIRS=$(find . -maxdepth 2 -mindepth 2 -name "Cargo.toml" -exec dirname {} + \
+            | sed 's|^\./||' \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          
+          echo "Found Rust extensions: $DIRS"
+          echo "matrix=$DIRS" >> "$GITHUB_OUTPUT"
+
+  # Job 2: Build all discovered extensions in parallel
+  build:
+    name: Build WASI (${{ matrix.extension }})
+    needs: discover
+    if: ${{ needs.discover.outputs.matrix != '[]' && needs.discover.outputs.matrix != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: ${{ fromJson(needs.discover.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.extension }}
+
+      - name: Compile Extension
+        run: |
+          cd ${{ matrix.extension }}
+          cargo build --release --target wasm32-wasip1
+
+      - name: Package Artifacts
+        run: |
+          # Create staging folder for contents of this extension
+          mkdir -p staging/${{ matrix.extension }}
+          mkdir -p dist
+          
+          # Copy compiled WASI binary
+          cp ${{ matrix.extension }}/target/wasm32-wasip1/release/*.wasm staging/${{ matrix.extension }}/
+          
+          # Copy manifest JSON if present
+          if [ -f "${{ matrix.extension }}/manifest.json" ]; then
+            cp "${{ matrix.extension }}/manifest.json" staging/${{ matrix.extension }}/
+          elif [ -f "${{ matrix.extension }}/${{ matrix.extension }}.json" ]; then
+            cp "${{ matrix.extension }}/${{ matrix.extension }}.json" staging/${{ matrix.extension }}/
+          elif [ -f "${{ matrix.extension }}.json" ]; then
+            cp "${{ matrix.extension }}.json" staging/${{ matrix.extension }}/
+          fi
+
+          # Create bundled zip in dist/
+          cd staging/${{ matrix.extension }}
+          zip -r ../../dist/${{ matrix.extension }}.zip ./*
+          cd ../..
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.extension }}-wasi
+          path: dist/${{ matrix.extension }}.zip
+          retention-days: 14
+
+  # Job 3: Publish GitHub Release when tagged
+  release:
+    name: Publish Release Assets
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true

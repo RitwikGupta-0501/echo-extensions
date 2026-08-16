@@ -6,3 +6,6 @@ node_modules/
 # OS / Editor artifacts
 .DS_Store
 *.swp
+
+# Compiled WebAssembly binaries
+*.wasm
