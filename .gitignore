@@ -1,0 +1,8 @@
+# Build targets
+target/
+dist/
+node_modules/
+
+# OS / Editor artifacts
+.DS_Store
+*.swp

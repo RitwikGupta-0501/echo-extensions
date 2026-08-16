@@ -1,0 +1,10 @@
+{
+  "id": "youtube-wasm",
+  "name": "YouTube (WASM Sandbox)",
+  "author": "Echo Team",
+  "version": "1.0.0",
+  "main": "youtube-wasm.wasm",
+  "capabilities": ["search", "resolve", "explore"],
+  "priority": 5,
+  "icon": "lucide:box"
+}
