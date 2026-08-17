@@ -835,6 +835,7 @@ struct YtClient {
     needs_potoken: bool,
     needs_sts: bool,
     include_ua_in_context: bool,
+    is_embedded: bool,
     os_name: Option<&'static str>,
     os_version: Option<&'static str>,
     device_make: Option<&'static str>,
@@ -844,34 +845,71 @@ struct YtClient {
 
 fn fallback_clients() -> Vec<YtClient> {
     vec![
+        // 1. VISIONOS (Direct URL, lightweight)
         YtClient {
             name: "VISIONOS", version: "0.1", client_id: "101",
             user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-            needs_potoken: false, needs_sts: false, include_ua_in_context: false,
+            needs_potoken: false, needs_sts: false, include_ua_in_context: false, is_embedded: false,
             os_name: Some("visionOS"), os_version: Some("1.3.21O771"),
             device_make: Some("Apple"), device_model: Some("RealityDevice14,1"),
             android_sdk_version: None,
         },
+        // 2. ANDROID_VR 1.65.10 (Direct URL)
         YtClient {
             name: "ANDROID_VR", version: "1.65.10", client_id: "28",
             user_agent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-            needs_potoken: false, needs_sts: false, include_ua_in_context: true,
+            needs_potoken: false, needs_sts: false, include_ua_in_context: true, is_embedded: false,
             os_name: Some("Android"), os_version: Some("12L"),
             device_make: Some("Oculus"), device_model: Some("Quest 3"),
             android_sdk_version: Some("32"),
         },
+        // 3. ANDROID_VR 1.43.32 (Direct URL)
         YtClient {
             name: "ANDROID_VR", version: "1.43.32", client_id: "28",
             user_agent: "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)",
-            needs_potoken: false, needs_sts: false, include_ua_in_context: true,
+            needs_potoken: false, needs_sts: false, include_ua_in_context: true, is_embedded: false,
             os_name: Some("Android"), os_version: Some("12"),
             device_make: Some("Oculus"), device_model: Some("Quest 3"),
             android_sdk_version: Some("32"),
         },
+        // 4. IOS (Direct URL / iOS Native)
+        YtClient {
+            name: "IOS", version: "21.03.1", client_id: "5",
+            user_agent: "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)",
+            needs_potoken: false, needs_sts: false, include_ua_in_context: false, is_embedded: false,
+            os_name: Some("iOS"), os_version: Some("18.2.22C152"),
+            device_make: Some("Apple"), device_model: Some("iPhone16,2"),
+            android_sdk_version: None,
+        },
+        // 5. WEB_REMIX (Main high-quality YT Music client: 256kbps Opus/AAC with cipher + n-transform)
         YtClient {
             name: "WEB_REMIX", version: "1.20260114.03.00", client_id: "67",
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
-            needs_potoken: true, needs_sts: true, include_ua_in_context: false,
+            needs_potoken: true, needs_sts: true, include_ua_in_context: false, is_embedded: false,
+            os_name: None, os_version: None, device_make: None, device_model: None,
+            android_sdk_version: None,
+        },
+        // 6. TVHTML5 (Smart TV client)
+        YtClient {
+            name: "TVHTML5", version: "7.20260114.12.00", client_id: "7",
+            user_agent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
+            needs_potoken: true, needs_sts: true, include_ua_in_context: true, is_embedded: false,
+            os_name: None, os_version: None, device_make: None, device_model: None,
+            android_sdk_version: None,
+        },
+        // 7. TVHTML5_SIMPLY_EMBEDDED_PLAYER (Age-restriction & login bypass via Reddit embed)
+        YtClient {
+            name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", version: "2.0", client_id: "85",
+            user_agent: "Mozilla/5.0 (PlayStation; PlayStation 4/12.02) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
+            needs_potoken: false, needs_sts: true, include_ua_in_context: false, is_embedded: true,
+            os_name: None, os_version: None, device_make: None, device_model: None,
+            android_sdk_version: None,
+        },
+        // 8. WEB_CREATOR (Creator/studio fallback)
+        YtClient {
+            name: "WEB_CREATOR", version: "1.20260114.05.00", client_id: "62",
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+            needs_potoken: true, needs_sts: true, include_ua_in_context: false, is_embedded: false,
             os_name: None, os_version: None, device_make: None, device_model: None,
             android_sdk_version: None,
         },
@@ -895,12 +933,20 @@ fn build_player_body(client: &YtClient, track_id: &str, vd: &str, po_token: Opti
     if let Some(v) = client.device_model { client_obj["deviceModel"] = serde_json::json!(v); }
     if let Some(v) = client.android_sdk_version { client_obj["androidSdkVersion"] = serde_json::json!(v); }
 
+    let mut context_obj = serde_json::json!({
+        "client": client_obj,
+        "request": { "internalExperimentFlags": [], "useSsl": true },
+        "user": { "lockedSafetyMode": false }
+    });
+
+    if client.is_embedded {
+        context_obj["thirdParty"] = serde_json::json!({
+            "embedUrl": "https://www.reddit.com/"
+        });
+    }
+
     let mut body = serde_json::json!({
-        "context": {
-            "client": client_obj,
-            "request": { "internalExperimentFlags": [], "useSsl": true },
-            "user": { "lockedSafetyMode": false }
-        },
+        "context": context_obj,
         "videoId": track_id,
         "contentCheckOk": true,
         "racyCheckOk": true,
@@ -1257,6 +1303,21 @@ mod tests {
         assert_eq!(extract_signature_timestamp("no timestamp here"), None);
     }
 
+
+
+    #[test]
+    fn test_embedded_client_body() {
+        let client = YtClient {
+            name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", version: "2.0", client_id: "85",
+            user_agent: "test_ua", needs_potoken: false, needs_sts: true,
+            include_ua_in_context: false, is_embedded: true,
+            os_name: None, os_version: None, device_make: None, device_model: None,
+            android_sdk_version: None,
+        };
+        let body = build_player_body(&client, "dQw4w9WgXcQ", "test_vd", None, Some(20125));
+        assert_eq!(body["context"]["thirdParty"]["embedUrl"], "https://www.reddit.com/");
+        assert_eq!(body["playbackContext"]["contentPlaybackContext"]["signatureTimestamp"], 20125);
+    }
 
     #[test]
     fn test_parse_signature_cipher() {
