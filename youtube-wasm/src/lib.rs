@@ -226,6 +226,8 @@ fn fetch_player_js_and_sts(hash: &str) -> Option<(i64, String)> {
 
     if let Ok(resp) = do_http("GET", &url, Some(headers), None) {
         if resp.status == 200 {
+            let _ = set_storage("yt_player_js", &resp.body);
+            let _ = set_storage(&format!("yt_player_js_{}", hash), &resp.body);
             if let Some(sts) = extract_signature_timestamp(&resp.body) {
                 return Some((sts, resp.body));
             }
@@ -233,6 +235,232 @@ fn fetch_player_js_and_sts(hash: &str) -> Option<(i64, String)> {
     }
     None
 }
+
+fn url_decode_component(s: &str) -> String {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
+                out.push(val);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn parse_signature_cipher(cipher_str: &str) -> Option<(String, String, String)> {
+    let mut s = None;
+    let mut sp = "sig".to_string();
+    let mut url = None;
+
+    for part in cipher_str.split('&') {
+        if let Some((k, v)) = part.split_once('=') {
+            match k {
+                "s" => s = Some(url_decode_component(v)),
+                "sp" => sp = url_decode_component(v),
+                "url" => url = Some(url_decode_component(v)),
+                _ => {}
+            }
+        }
+    }
+
+    if let (Some(s_val), Some(url_val)) = (s, url) {
+        Some((s_val, sp, url_val))
+    } else {
+        None
+    }
+}
+
+fn deobfuscate_signature(obfuscated_s: &str, player_hash: &str) -> String {
+    if !init_sandbox_player_js_if_needed(player_hash) {
+        let _ = unsafe { host_log("[CIPHER] Sandbox not initialized, returning raw signature".to_string()) };
+        return obfuscated_s.to_string();
+    }
+
+    let escaped_s = obfuscated_s.replace('\\', "\\\\").replace('\'', "\\'");
+    let decipher_script = format!(
+        r#"(function() {{
+            try {{
+                if (typeof window.__yt_sig_decipher === 'function') {{
+                    var res = window.__yt_sig_decipher('{escaped_s}');
+                    if (typeof res === 'string' && res.length >= 10) {{
+                        return res;
+                    }}
+                }}
+            }} catch(e) {{}}
+            return '{escaped_s}';
+        }})()"#
+    );
+
+    match unsafe { host_execute_webview_js(decipher_script) } {
+        Ok(deciphered) => {
+            let trimmed = deciphered.trim().trim_matches('"').to_string();
+            if !trimmed.is_empty() && trimmed.len() >= 10 {
+                let _ = unsafe { host_log(format!("[CIPHER] Successfully deciphered signature (len: {})", trimmed.len())) };
+                trimmed
+            } else {
+                let _ = unsafe { host_log(format!("[CIPHER] Decipher returned invalid result: {}", trimmed)) };
+                obfuscated_s.to_string()
+            }
+        }
+        Err(e) => {
+            let _ = unsafe { host_log(format!("[CIPHER] Failed to execute decipher JS: {:?}", e)) };
+            obfuscated_s.to_string()
+        }
+    }
+}
+
+fn extract_n_param_from_url(url: &str) -> Option<String> {
+    let query = url.split_once('?')?;
+    for param in query.1.split('&') {
+        if let Some((k, v)) = param.split_once('=') {
+            if k == "n" && !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn init_sandbox_player_js_if_needed(player_hash: &str) -> bool {
+    let check_js = format!(
+        r#"typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{}';"#,
+        player_hash
+    );
+    if let Ok(res) = unsafe { host_execute_webview_js(check_js) } {
+        if res.trim() == "true" {
+            return true;
+        }
+    }
+
+    let player_js = get_storage(&format!("yt_player_js_{}", player_hash))
+        .or_else(|_| get_storage("yt_player_js"))
+        .unwrap_or_default();
+
+    let player_js = if player_js.is_empty() {
+        if let Some((_, js)) = fetch_player_js_and_sts(player_hash) {
+            js
+        } else {
+            String::new()
+        }
+    } else {
+        player_js
+    };
+
+    if player_js.is_empty() {
+        let _ = unsafe { host_log("[N-TRANSFORM] Could not retrieve player.js for init".to_string()) };
+        return false;
+    }
+
+    let _ = unsafe { host_log(format!("[N-TRANSFORM] Initializing player.js (length: {} chars) in JS Sandbox...", player_js.len())) };
+
+    let player_js_quoted = serde_json::to_string(&player_js).unwrap_or_default(); let init_script = format!(
+        r#"(function() {{
+            try {{
+                if (typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{player_hash}') {{
+                    return 'ALREADY_READY';
+                }}
+                var playerJsStr = {player_js_quoted}; {player_js};
+                
+                var testInput = "KdrqFlzJXl9EcCwlmEy";
+                var nFunc = null;
+
+                var keys = Object.getOwnPropertyNames(window);
+                for (var i = 0; i < keys.length; i++) {{
+                    var k = keys[i];
+                    if (k.startsWith("webkit") || k.startsWith("on") || k.startsWith("__") || k === "window" || k === "self" || k === "bgVm" || k === "bgProgram") continue;
+                    try {{
+                        var fn = window[k];
+                        if (typeof fn === 'function' && fn.length === 1) {{
+                            var res = fn(testInput);
+                            if (typeof res === 'string' && res !== testInput && res.length >= 5 && /^[a-zA-Z0-9_-]+$/.test(res)) {{
+                                nFunc = fn;
+                                break;
+                            }}
+                        }}
+                    }} catch(e) {{}}
+                }}
+
+                if (nFunc) {{
+                    window.__yt_n_transform = nFunc;
+                    window.__yt_loaded_player_hash = '{player_hash}';
+                    return 'SUCCESS';
+                }}
+                return 'NO_N_FUNC';
+            }} catch(e) {{
+                return 'ERROR: ' + e;
+            }}
+        }})()"#
+    );
+
+    match unsafe { host_execute_webview_js(init_script) } {
+        Ok(res) => {
+            let _ = unsafe { host_log(format!("[N-TRANSFORM] Sandbox init result: {}", res)) };
+            res.contains("SUCCESS") || res.contains("ALREADY_READY")
+        }
+        Err(e) => {
+            let _ = unsafe { host_log(format!("[N-TRANSFORM] Sandbox init failed: {:?}", e)) };
+            false
+        }
+    }
+}
+
+fn transform_n_param(raw_n: &str, player_hash: &str) -> String {
+    if !init_sandbox_player_js_if_needed(player_hash) {
+        let _ = unsafe { host_log("[N-TRANSFORM] Sandbox not initialized, returning raw n".to_string()) };
+        return raw_n.to_string();
+    }
+
+    let transform_script = format!(
+        r#"(function() {{
+            try {{
+                if (typeof window.__yt_n_transform === 'function') {{
+                    var res = window.__yt_n_transform('{raw_n}');
+                    if (typeof res === 'string' && res.length >= 5 && /^[a-zA-Z0-9_-]+$/.test(res)) {{
+                        return res;
+                    }}
+                }}
+            }} catch(e) {{}}
+            return '{raw_n}';
+        }})()"#
+    );
+
+    match unsafe { host_execute_webview_js(transform_script) } {
+        Ok(transformed) => {
+            let trimmed = transformed.trim().trim_matches('"').to_string();
+            if !trimmed.is_empty() && trimmed != raw_n && trimmed.len() >= 5 {
+                let _ = unsafe { host_log(format!("[N-TRANSFORM] Successfully transformed n: {} -> {}", raw_n, trimmed)) };
+                trimmed
+            } else {
+                let _ = unsafe { host_log(format!("[N-TRANSFORM] N transform produced identical or invalid result: {}", trimmed)) };
+                raw_n.to_string()
+            }
+        }
+        Err(e) => {
+            let _ = unsafe { host_log(format!("[N-TRANSFORM] Failed to execute transform JS: {:?}", e)) };
+            raw_n.to_string()
+        }
+    }
+}
+
+fn apply_n_transform_to_url(url: &str, player_hash: &str) -> String {
+    if let Some(raw_n) = extract_n_param_from_url(url) {
+        let transformed_n = transform_n_param(&raw_n, player_hash);
+        if transformed_n != raw_n {
+            let old_param = format!("n={}", raw_n);
+            let new_param = format!("n={}", transformed_n);
+            return url.replace(&old_param, &new_param);
+        }
+    }
+    url.to_string()
+}
+
 
 fn get_or_refresh_sts() -> i64 {
     let now_secs = std::time::SystemTime::now()
@@ -873,10 +1101,26 @@ pub fn resolve(input: String) -> FnResult<String> {
 
         // Echo now supports Opus decoding! We prefer Opus for better quality at similar bitrates,
         // falling back to AAC, then ranking by bitrate.
-        let mut best: Option<(&serde_json::Value, u8, i64)> = None;
+        let player_hash = get_storage("yt_player_hash").unwrap_or_default();
+        let mut best: Option<(&serde_json::Value, u8, i64, Option<(String, String, String)>)> = None;
         for format in formats {
             let mime = format["mimeType"].as_str().unwrap_or("");
-            if !mime.starts_with("audio/") || format["url"].as_str().is_none() {
+            if !mime.starts_with("audio/") {
+                continue;
+            }
+
+            let direct_url = format["url"].as_str();
+            let cipher_data = if direct_url.is_none() {
+                if let Some(sc) = format["signatureCipher"].as_str().or_else(|| format["cipher"].as_str()) {
+                    parse_signature_cipher(sc)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if direct_url.is_none() && cipher_data.is_none() {
                 continue;
             }
             
@@ -891,23 +1135,29 @@ pub fn resolve(input: String) -> FnResult<String> {
             let bitrate = format["bitrate"].as_i64().unwrap_or(0);
             let should_replace = match best {
                 None => true,
-                Some((_, best_score, best_bitrate)) => (format_score, bitrate) > (best_score, best_bitrate),
+                Some((_, best_score, best_bitrate, _)) => (format_score, bitrate) > (best_score, best_bitrate),
             };
             if should_replace {
-                best = Some((format, format_score, bitrate));
+                best = Some((format, format_score, bitrate, cipher_data));
             }
         }
-        let best = best.map(|(f, _, b)| (f, b));
 
-        if let Some((format, _)) = best {
-            stream_url = format["url"].as_str().unwrap_or("").to_string();
+        if let Some((format, _, _, cipher_data)) = best {
+            if let Some((obfuscated_s, sp, base_url)) = cipher_data {
+                unsafe { host_log(format!("[RESOLVE] Selected {} — audio format with signatureCipher, deciphering...", client.name))? };
+                let deciphered_s = deobfuscate_signature(&obfuscated_s, &player_hash);
+                let sep = if base_url.contains('?') { "&" } else { "?" };
+                stream_url = format!("{}{}{}={}", base_url, sep, sp, url_encode_component(&deciphered_s));
+            } else {
+                stream_url = format["url"].as_str().unwrap_or("").to_string();
+                unsafe { host_log(format!("[RESOLVE] Selected {} — audio format with direct URL", client.name))? };
+            }
             quality_hint = format["audioQuality"].as_str().map(|s| s.to_string());
             duration_sec = json["videoDetails"]["lengthSeconds"].as_str().unwrap_or("0").parse().unwrap_or(0);
-            unsafe { host_log(format!("[RESOLVE] Selected {} — audio format with direct URL", client.name))? };
             selected_client = Some(client);
             break;
         } else {
-            unsafe { host_log(format!("[RESOLVE] {} OK but no directly-usable audio format (cipher required, unsupported)", client.name))? };
+            unsafe { host_log(format!("[RESOLVE] {} OK but no usable audio formats found", client.name))? };
         }
     }
 
@@ -915,6 +1165,12 @@ pub fn resolve(input: String) -> FnResult<String> {
     if let Some(ref client) = selected_client {
         out_headers.insert("User-Agent".to_string(), client.user_agent.to_string());
         if client.needs_potoken {
+            // Transform the 'n' parameter to avoid 40-60 kbps CDN bandwidth throttling
+            let player_hash = get_storage("yt_player_hash").unwrap_or_default();
+            if !player_hash.is_empty() {
+                stream_url = apply_n_transform_to_url(&stream_url, &player_hash);
+            }
+
             // Only clients that use poTokens (WEB_REMIX et al.) also need the CDN pot= param,
             // and their CDN validates a matching Origin/Referer pair.
             if !video_potoken.is_empty() {
@@ -961,4 +1217,75 @@ pub fn fetch_module(input: String) -> FnResult<String> {
     
     let data = ModuleData { items };
     Ok(serde_json::to_string(&data)?)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_player_hash() {
+        // Escaped iframe_api response
+        let iframe_body = r#"yt.setConfig({'PLAYER_JS_URL': '\/s\/player\/d253cfc5\/player_ias.vflset\/en_US\/base.js'});"#;
+        assert_eq!(extract_player_hash(iframe_body), Some("d253cfc5".to_string()));
+
+        // Direct web URL format
+        let web_body = r#"<script src="/s/player/9c249f6f/player_ias.vflset/en_GB/base.js"></script>"#;
+        assert_eq!(extract_player_hash(web_body), Some("9c249f6f".to_string()));
+
+        // Negative case
+        assert_eq!(extract_player_hash("random html body without player"), None);
+    }
+
+    #[test]
+    fn test_extract_signature_timestamp() {
+        // Anchored signatureTimestamp pattern
+        let js_anchored = r#"var a = {signatureTimestamp:20123, other: 1};"#;
+        assert_eq!(extract_signature_timestamp(js_anchored), Some(20123));
+
+        // Anchored with quotes and spacing
+        let js_quoted = r#"{"signatureTimestamp": 20125, "sts": 20111}"#;
+        assert_eq!(extract_signature_timestamp(js_quoted), Some(20125));
+
+        // Loose sts fallback pattern
+        let js_loose = r#"var b = {sts: 20119, foo: 'bar'};"#;
+        assert_eq!(extract_signature_timestamp(js_loose), Some(20119));
+
+        // Negative / malformed
+        assert_eq!(extract_signature_timestamp("var sts = 0;"), None);
+        assert_eq!(extract_signature_timestamp("no timestamp here"), None);
+    }
+
+
+    #[test]
+    fn test_parse_signature_cipher() {
+        let raw = "s=test_sig_1234567890&sp=sig&url=https%3A%2F%2Frr1---sn.googlevideo.com%2Fvideoplayback%3Fexpire%3D123";
+        let parsed = parse_signature_cipher(raw);
+        assert!(parsed.is_some());
+        let (s, sp, url) = parsed.unwrap();
+        assert_eq!(s, "test_sig_1234567890");
+        assert_eq!(sp, "sig");
+        assert_eq!(url, "https://rr1---sn.googlevideo.com/videoplayback?expire=123");
+    }
+
+    #[test]
+    fn test_url_decode_component() {
+        assert_eq!(url_decode_component("https%3A%2F%2Fexample.com%2Fpath%3Ffoo%3Dbar%20baz"), "https://example.com/path?foo=bar baz");
+    }
+
+    #[test]
+    fn test_extract_n_param_from_url() {
+        // n at beginning of query
+        let url1 = "https://rr1---sn-4g5ednle.googlevideo.com/videoplayback?n=abc123XYZ&itag=251";
+        assert_eq!(extract_n_param_from_url(url1), Some("abc123XYZ".to_string()));
+
+        // n in middle of query
+        let url2 = "https://rr1---sn-4g5ednle.googlevideo.com/videoplayback?expire=123&n=KdrqFlzJXl9EcCwlmEy&sparams=expire";
+        assert_eq!(extract_n_param_from_url(url2), Some("KdrqFlzJXl9EcCwlmEy".to_string()));
+
+        // n missing
+        let url3 = "https://rr1---sn-4g5ednle.googlevideo.com/videoplayback?expire=123&itag=251";
+        assert_eq!(extract_n_param_from_url(url3), None);
+    }
 }
