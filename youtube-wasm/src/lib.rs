@@ -1254,6 +1254,31 @@ pub fn get_modules() -> FnResult<String> {
     Ok(serde_json::to_string(&mods)?)
 }
 
+
+#[plugin_fn]
+pub fn warmup(_input: String) -> FnResult<String> {
+    let _ = unsafe { host_log("[WARMUP] Starting YouTube WASM prewarm...".to_string()) };
+
+    // 1. Pre-warm BotGuard JNN & visitorData
+    let vd = get_visitor_data().unwrap_or_default();
+    if let Err(e) = init_botguard() {
+        let _ = unsafe { host_log(format!("[WARMUP] BotGuard init skipped/failed: {:?}", e)) };
+    } else if !vd.is_empty() {
+        let _ = generate_po_token(&vd);
+    }
+
+    // 2. Pre-warm Player JS & dynamic STS
+    let sts = get_or_refresh_sts();
+    let player_hash = get_storage("yt_player_hash").unwrap_or_default();
+    if !player_hash.is_empty() {
+        let _ = init_sandbox_player_js_if_needed(&player_hash);
+        let _ = unsafe { host_log(format!("[WARMUP] Cached dynamic STS={} and player hash={}", sts, player_hash)) };
+    }
+
+    let _ = unsafe { host_log("[WARMUP] YouTube WASM prewarm completed successfully".to_string()) };
+    Ok(serde_json::json!({"status": "ready"}).to_string())
+}
+
 #[plugin_fn]
 pub fn fetch_module(input: String) -> FnResult<String> {
     // Just wrap search for simplicity

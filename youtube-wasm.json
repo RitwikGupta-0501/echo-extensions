@@ -4,7 +4,12 @@
   "author": "Echo Team",
   "version": "1.0.0",
   "main": "youtube-wasm.wasm",
-  "capabilities": ["search", "resolve", "explore"],
+  "capabilities": [
+    "search",
+    "resolve",
+    "explore",
+    "warmup"
+  ],
   "priority": 5,
   "icon": "lucide:box"
 }
