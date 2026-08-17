@@ -107,6 +107,190 @@ fn set_storage(key: &str, value: &str) -> FnResult<()> {
     Ok(())
 }
 
+const STS_CACHE_TTL_SECS: u64 = 6 * 60 * 60; // 6 hours
+
+#[derive(Serialize, Deserialize)]
+struct StsCache {
+    sts: i64,
+    player_hash: String,
+    timestamp_secs: u64,
+}
+
+fn extract_player_hash(content: &str) -> Option<String> {
+    let markers = ["/s/player/", r"\/s\/player\/", "/player/", r"\/player\/"];
+    for marker in markers {
+        let mut search_from = 0;
+        while let Some(pos) = content[search_from..].find(marker) {
+            let start = search_from + pos + marker.len();
+            let remainder = &content[start..];
+            if let Some(end_idx) = remainder.find(|c: char| c == '/' || c == '\\' || c == '"' || c == '\'') {
+                let candidate = &remainder[..end_idx];
+                if candidate.len() >= 6 && candidate.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    return Some(candidate.to_string());
+                }
+            }
+            search_from = start;
+        }
+    }
+    None
+}
+
+fn extract_signature_timestamp(player_js: &str) -> Option<i64> {
+    // 1. Anchored signatureTimestamp search (Tier 1)
+    for key in ["signatureTimestamp", "\"signatureTimestamp\"", "'signatureTimestamp'"] {
+        let mut search_from = 0;
+        while let Some(pos) = player_js[search_from..].find(key) {
+            let start = search_from + pos + key.len();
+            let remainder = &player_js[start..];
+            let mut chars = remainder.char_indices();
+            let mut num_start = None;
+            while let Some((idx, c)) = chars.next() {
+                if c.is_ascii_digit() {
+                    num_start = Some(start + idx);
+                    break;
+                } else if c != ':' && c != '=' && c != ' ' && c != '\t' && c != '"' && c != '\'' {
+                    break;
+                }
+            }
+            if let Some(n_start) = num_start {
+                let num_str: String = player_js[n_start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(val) = num_str.parse::<i64>() {
+                    if val > 10000 {
+                        return Some(val);
+                    }
+                }
+            }
+            search_from = start;
+        }
+    }
+
+    // 2. Loose sts search (Tier 2)
+    for key in ["sts:", "sts=", "\"sts\":", "'sts':"] {
+        let mut search_from = 0;
+        while let Some(pos) = player_js[search_from..].find(key) {
+            let start = search_from + pos + key.len();
+            let remainder = &player_js[start..];
+            let mut chars = remainder.char_indices();
+            let mut num_start = None;
+            while let Some((idx, c)) = chars.next() {
+                if c.is_ascii_digit() {
+                    num_start = Some(start + idx);
+                    break;
+                } else if c != ' ' && c != '\t' && c != '"' && c != '\'' {
+                    break;
+                }
+            }
+            if let Some(n_start) = num_start {
+                let num_str: String = player_js[n_start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(val) = num_str.parse::<i64>() {
+                    if val > 10000 {
+                        return Some(val);
+                    }
+                }
+            }
+            search_from = start;
+        }
+    }
+    None
+}
+
+fn fetch_player_hash_from_network() -> Option<String> {
+    let mut headers = HashMap::new();
+    headers.insert("User-Agent".to_string(), USER_AGENT.to_string());
+    
+    // Primary: fetch https://www.youtube.com/iframe_api
+    if let Ok(resp) = do_http("GET", "https://www.youtube.com/iframe_api", Some(headers.clone()), None) {
+        if resp.status == 200 {
+            if let Some(hash) = extract_player_hash(&resp.body) {
+                return Some(hash);
+            }
+        }
+    }
+
+    // Fallback: fetch music.youtube.com
+    if let Ok(resp) = do_http("GET", "https://music.youtube.com/", Some(headers), None) {
+        if resp.status == 200 {
+            if let Some(hash) = extract_player_hash(&resp.body) {
+                return Some(hash);
+            }
+        }
+    }
+
+    None
+}
+
+fn fetch_player_js_and_sts(hash: &str) -> Option<(i64, String)> {
+    let mut headers = HashMap::new();
+    headers.insert("User-Agent".to_string(), USER_AGENT.to_string());
+    let url = format!("https://www.youtube.com/s/player/{}/player_ias.vflset/en_GB/base.js", hash);
+
+    if let Ok(resp) = do_http("GET", &url, Some(headers), None) {
+        if resp.status == 200 {
+            if let Some(sts) = extract_signature_timestamp(&resp.body) {
+                return Some((sts, resp.body));
+            }
+        }
+    }
+    None
+}
+
+fn get_or_refresh_sts() -> i64 {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // 1. Check cached STS in host storage
+    if let Ok(cached_json) = get_storage("yt_sts_cache") {
+        if !cached_json.is_empty() {
+            if let Ok(cache) = serde_json::from_str::<StsCache>(&cached_json) {
+                if cache.sts > 0 && now_secs >= cache.timestamp_secs && (now_secs - cache.timestamp_secs) < STS_CACHE_TTL_SECS {
+                    let _ = unsafe { host_log(format!("[STS] Using cached signatureTimestamp: {} (hash: {}, age: {}s)", cache.sts, cache.player_hash, now_secs - cache.timestamp_secs)) };
+                    return cache.sts;
+                }
+            }
+        }
+    }
+
+    let _ = unsafe { host_log("[STS] Fetching dynamic player hash from YouTube...".to_string()) };
+
+    // 2. Fetch fresh player hash
+    if let Some(hash) = fetch_player_hash_from_network() {
+        let _ = unsafe { host_log(format!("[STS] Found active player hash: {}", hash)) };
+        if let Some((sts, _player_js)) = fetch_player_js_and_sts(&hash) {
+            let _ = unsafe { host_log(format!("[STS] Extracted dynamic signatureTimestamp: {} from base.js (hash: {})", sts, hash)) };
+            let cache = StsCache {
+                sts,
+                player_hash: hash.clone(),
+                timestamp_secs: now_secs,
+            };
+            if let Ok(json) = serde_json::to_string(&cache) {
+                let _ = set_storage("yt_sts_cache", &json);
+                let _ = set_storage("yt_player_hash", &hash);
+            }
+            return sts;
+        } else {
+            let _ = unsafe { host_log(format!("[STS] Failed to download base.js or extract STS for hash: {}", hash)) };
+        }
+    } else {
+        let _ = unsafe { host_log("[STS] Failed to extract player hash from iframe_api".to_string()) };
+    }
+
+    // 3. Graceful fallback to previously cached STS or default constant
+    if let Ok(cached_json) = get_storage("yt_sts_cache") {
+        if let Ok(cache) = serde_json::from_str::<StsCache>(&cached_json) {
+            if cache.sts > 0 {
+                let _ = unsafe { host_log(format!("[STS] Falling back to stale cached signatureTimestamp: {}", cache.sts)) };
+                return cache.sts;
+            }
+        }
+    }
+
+    let default_sts = 20111;
+    let _ = unsafe { host_log(format!("[STS] Falling back to hardcoded default signatureTimestamp: {}", default_sts)) };
+    default_sts
+}
+
 const REQUEST_KEY: &str = "O43z0dpjhgX20SCx4KAo";
 const GOOGLE_API_KEY: &str = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.3";
@@ -650,9 +834,7 @@ pub fn resolve(input: String) -> FnResult<String> {
     };
     unsafe { host_log(format!("Minted videoId-bound poToken (first 20 chars): {}", video_potoken.chars().take(20).collect::<String>()))? };
 
-    // TODO: fetch dynamically from base.js (see production_checklist.md #1). A stale value
-    // only affects clients with needs_sts=true below.
-    let sts: i64 = 20111;
+    let sts: i64 = get_or_refresh_sts();
 
     let mut stream_url = String::new();
     let mut quality_hint = Some("Medium".to_string());
