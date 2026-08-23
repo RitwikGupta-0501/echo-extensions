@@ -8,6 +8,7 @@ extern "ExtismHost" {
     fn host_execute_webview_js(script: String) -> String;
     fn host_log(msg: String);
     fn host_http_request(req: String) -> String;
+    fn host_telemetry_request(req: String) -> String;
     fn host_storage_get(req: String) -> String;
     fn host_storage_set(req: String);
 }
@@ -1762,6 +1763,45 @@ fn detect_renderer_type(renderer: &serde_json::Value) -> String {
     }
 }
 
+fn is_official_music_track(title: &str, artist: &str, music_video_type: Option<&str>) -> bool {
+    // 1. If explicit YouTube Music Video Type is available:
+    if let Some(mvt) = music_video_type {
+        if mvt == "MUSIC_VIDEO_TYPE_UGC" {
+            return false;
+        }
+    }
+
+    let title_lower = title.to_lowercase();
+    let artist_lower = artist.to_lowercase();
+
+    // 2. Reject obvious non-song video / spam upload keywords
+    let banned_title_keywords = [
+        "full album", "full ep", "1 hour", "10 hours", "10 hour",
+        "nightcore", "slowed + reverb", "slowed and reverb", "slowed & reverb",
+        "sped up", "speed up", "8d audio", "tiktok version", "tiktok edit",
+        "guitar cover", "drum cover", "piano cover", "bass cover", "instrumental cover",
+        "karaoke", "reaction", "parody", "leak", "unreleased snippet"
+    ];
+
+    for kw in &banned_title_keywords {
+        if title_lower.contains(kw) {
+            return false;
+        }
+    }
+
+    // 3. Reject non-artist channel bylines
+    let banned_artist_keywords = [
+        "lyrics", "nightcore", "vibes", "edits", "audio hub"
+    ];
+
+    for kw in &banned_artist_keywords {
+        if artist_lower == *kw || (artist_lower.contains(kw) && !artist_lower.contains("- topic")) {
+            return false;
+        }
+    }
+
+    true
+}
 fn parse_search_track_renderer(renderer: &serde_json::Value) -> Option<TrackResult> {
     let cols = renderer["flexColumns"].as_array()?;
     let col0 = cols.get(0)?["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].as_array()?;
@@ -1828,6 +1868,18 @@ fn parse_search_track_renderer(renderer: &serde_json::Value) -> Option<TrackResu
                 }
             }
         }
+    }
+
+    let music_video_type = col0.get(0)
+        .and_then(|c| c["navigationEndpoint"]["watchEndpoint"]["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].as_str())
+        .or_else(|| renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].as_str());
+
+    if !is_official_music_track(&title, &artist, music_video_type) {
+        return None;
+    }
+
+    if artist.ends_with(" - Topic") {
+        artist = artist.trim_end_matches(" - Topic").to_string();
     }
 
     let cover = upscale_yt_art(renderer["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"][0]["url"].as_str());
@@ -2811,6 +2863,311 @@ pub fn browse_artist(input: String) -> FnResult<String> {
     };
 
     Ok(serde_json::to_string(&artist_detail)?)
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CanonicalSeedV1 {
+    pub abi_version: u32,
+    pub canonical_key: String,
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub isrc: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub native_id: Option<String>,
+    pub provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RadioStreamResultV1 {
+    pub tracks: Vec<TrackResult>,
+    pub continuation_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackTelemetryEventV1 {
+    pub native_track_id: String,
+    pub duration_ms: u64,
+    pub total_track_duration_ms: u64,
+    pub completed: bool,
+}
+
+fn fetch_innertube_next_related(video_id: &str) -> FnResult<Vec<TrackResult>> {
+    let vd = get_visitor_data().unwrap_or_default();
+    let body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": "1.20250101.01.00",
+                "visitorData": vd
+            }
+        },
+        "playlistId": format!("RDAMVM{}", video_id),
+        "videoId": video_id,
+        "isAudioOnly": true,
+        "enablePersistentPlaylistPanel": true
+    });
+
+    let mut headers = HashMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Referer".to_string(), "https://music.youtube.com/".to_string());
+
+    let res = do_http("POST", "https://music.youtube.com/youtubei/v1/next", Some(headers), Some(body.to_string()))?;
+    let json: serde_json::Value = serde_json::from_str(&res.body).unwrap_or_default();
+
+    let mut tracks = Vec::new();
+
+    if let Some(panel_contents) = json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].as_array() {
+        for item in panel_contents {
+            if let Some(renderer) = item.get("playlistPanelVideoRenderer") {
+                let id = renderer["videoId"].as_str().unwrap_or("").to_string();
+                if id.is_empty() || id == video_id {
+                    continue;
+                }
+                let title = renderer["title"]["runs"][0]["text"].as_str().unwrap_or("").to_string();
+                let mut artist = String::new();
+                let mut album = None;
+                let mut duration_ms = None;
+
+                if let Some(sub_runs) = renderer["longBylineText"]["runs"].as_array().or_else(|| renderer["shortBylineText"]["runs"].as_array()) {
+                    let parts: Vec<&str> = sub_runs.iter().filter_map(|r| r["text"].as_str()).filter(|t| *t != " • " && *t != " \u{2022} ").collect();
+                    if let Some(a) = parts.get(0) {
+                        artist = a.to_string();
+                    }
+                    if parts.len() >= 2 {
+                        album = Some(parts[1].to_string());
+                    }
+                }
+
+                if let Some(dur_text) = renderer["lengthText"]["runs"][0]["text"].as_str() {
+                    duration_ms = parse_duration_ms(dur_text);
+                }
+
+                let music_video_type = renderer["navigationEndpoint"]["watchEndpoint"]["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"]
+                    .as_str()
+                    .or_else(|| renderer["menu"]["menuRenderer"]["items"][0]["menuNavigationItemRenderer"]["navigationEndpoint"]["watchEndpoint"]["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].as_str());
+
+                if !is_official_music_track(&title, &artist, music_video_type) {
+                    continue;
+                }
+
+                if artist.ends_with(" - Topic") {
+                    artist = artist.trim_end_matches(" - Topic").to_string();
+                }
+
+                let raw_cover = renderer["thumbnail"]["thumbnails"].as_array()
+                    .and_then(|arr| arr.last())
+                    .and_then(|t| t["url"].as_str());
+                let cover_art_url = upscale_yt_art(raw_cover);
+
+                tracks.push(TrackResult {
+                    id,
+                    title,
+                    artist,
+                    album,
+                    cover_art_url,
+                    stream_url: None,
+                    quality_hint: None,
+                    duration_ms,
+                });
+            }
+        }
+    }
+
+    Ok(tracks)
+}
+
+fn clean_seed_artist_and_title(artist: &str, title: &str) -> (String, String) {
+    let mut clean_artist = artist.trim().to_string();
+    if let Some(first) = clean_artist.split(',').next() {
+        clean_artist = first.trim().to_string();
+    }
+    if let Some(first) = clean_artist.split('&').next() {
+        clean_artist = first.trim().to_string();
+    }
+    if let Some(first) = clean_artist.split(" feat").next() {
+        clean_artist = first.trim().to_string();
+    }
+
+    let mut clean_title = title.trim().to_string();
+    if let Some(pos) = clean_title.find(" - ") {
+        clean_title = clean_title[pos + 3..].trim().to_string();
+    }
+    for tag in &["(Official Music Video)", "(Official Video)", "(Official Audio)", "[Audio]", "(Audio)", "(Lyric Video)", "(Lyrics)", "(Live)", "(Acoustic)", "(Remix)"] {
+        clean_title = clean_title.replace(tag, "").trim().to_string();
+    }
+
+    (clean_artist, clean_title)
+}
+
+fn do_get_related(input: &str) -> FnResult<String> {
+    let seed: CanonicalSeedV1 = serde_json::from_str(input)?;
+    let (clean_artist, clean_title) = clean_seed_artist_and_title(&seed.artist, &seed.title);
+    let _ = unsafe { host_log(format!("[RECOMMEND] Fetching artist catalog for seed: {} (clean: {} - {})", seed.artist, clean_artist, clean_title)) };
+
+    // Query artist songs for rich, varied catalog & vibe recommendations
+    let query = if !clean_artist.is_empty() {
+        format!("{} songs", clean_artist)
+    } else {
+        clean_title.clone()
+    };
+
+    let search_input = serde_json::json!({
+        "query": query,
+        "filter": "songs"
+    }).to_string();
+
+    if let Ok(categorized) = do_search_categorized(search_input) {
+        if let Ok(parsed) = serde_json::from_str::<CategorizedSearchResult>(&categorized) {
+            let mut tracks = Vec::new();
+            let lower_seed_title = clean_title.to_lowercase();
+            let lower_seed_artist = clean_artist.to_lowercase();
+
+            for sec in parsed.sections {
+                for item in sec.items {
+                    if let SearchItem::Track(t) = item {
+                        let t_title_lower = t.title.to_lowercase();
+                        let t_artist_lower = t.artist.to_lowercase();
+
+                        // Filter out non-song noise, mashups, binaural meditation loops
+                        let noise_keywords = [
+                            "mashup", "binaural", "meditation", "432hz", "528hz", 
+                            "1 hour", "10 hours", "relaxing background", "sleep music", "iq boost"
+                        ];
+                        if noise_keywords.iter().any(|k| t_title_lower.contains(k)) {
+                            continue;
+                        }
+
+                        // Robust seed song exclusion: Exclude any variation of the seed track by the seed artist
+                        let is_artist_match = lower_seed_artist.is_empty() 
+                            || t_artist_lower.contains(&lower_seed_artist) 
+                            || lower_seed_artist.contains(&t_artist_lower);
+
+                        let is_title_match = !lower_seed_title.is_empty() && (
+                            t_title_lower == lower_seed_title 
+                            || t_title_lower.contains(&lower_seed_title) 
+                            || lower_seed_title.contains(&t_title_lower)
+                        );
+
+                        if is_artist_match && is_title_match {
+                            continue; // Skip duplicate upload/cover/remix of the seed song itself
+                        }
+
+                        tracks.push(t);
+                    }
+                }
+            }
+
+            if !tracks.is_empty() {
+                return Ok(serde_json::to_string(&tracks)?);
+            }
+        }
+    }
+
+    let empty: Vec<TrackResult> = Vec::new();
+    Ok(serde_json::to_string(&empty)?)
+}
+
+#[plugin_fn]
+pub fn get_related(input: String) -> FnResult<String> {
+    do_get_related(&input)
+}
+
+fn do_get_radio(input: &str) -> FnResult<String> {
+    let seed: CanonicalSeedV1 = serde_json::from_str(input)?;
+    let _ = unsafe { host_log(format!("[RADIO] Generating Automix radio for seed: {} - {}", seed.artist, seed.title)) };
+
+    // 1. If seed has native_id (videoId), directly fetch Automix radio
+    if let Some(vid) = &seed.native_id {
+        if !vid.is_empty() {
+            if let Ok(tracks) = fetch_innertube_next_related(vid) {
+                if !tracks.is_empty() {
+                    let result = RadioStreamResultV1 {
+                        tracks,
+                        continuation_token: None,
+                    };
+                    return Ok(serde_json::to_string(&result)?);
+                }
+            }
+        }
+    }
+
+    // 2. Resolve videoId by searching artist + title
+    let (clean_artist, clean_title) = clean_seed_artist_and_title(&seed.artist, &seed.title);
+    let search_query = if !clean_artist.is_empty() && !clean_title.is_empty() {
+        format!("{} {}", clean_artist, clean_title)
+    } else if !clean_artist.is_empty() {
+        format!("{} songs", clean_artist)
+    } else {
+        clean_title
+    };
+
+    let search_input = serde_json::json!({
+        "query": search_query,
+        "filter": "songs"
+    }).to_string();
+
+    if let Ok(categorized) = do_search_categorized(search_input) {
+        if let Ok(parsed) = serde_json::from_str::<CategorizedSearchResult>(&categorized) {
+            for sec in parsed.sections {
+                for item in sec.items {
+                    if let SearchItem::Track(t) = item {
+                        if !t.id.is_empty() {
+                            if let Ok(automix_tracks) = fetch_innertube_next_related(&t.id) {
+                                if !automix_tracks.is_empty() {
+                                    let result = RadioStreamResultV1 {
+                                        tracks: automix_tracks,
+                                        continuation_token: None,
+                                    };
+                                    return Ok(serde_json::to_string(&result)?);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to related search if Automix is empty
+    let related_json = do_get_related(input)?;
+    let tracks: Vec<TrackResult> = serde_json::from_str(&related_json).unwrap_or_default();
+    let result = RadioStreamResultV1 {
+        tracks,
+        continuation_token: None,
+    };
+    Ok(serde_json::to_string(&result)?)
+}
+
+#[plugin_fn]
+pub fn get_radio(input: String) -> FnResult<String> {
+    do_get_radio(&input)
+}
+
+#[plugin_fn]
+pub fn on_playback_event(input: String) -> FnResult<String> {
+    let event: PlaybackTelemetryEventV1 = match serde_json::from_str(&input) {
+        Ok(e) => e,
+        Err(_) => return Ok("ignored".to_string()),
+    };
+
+    let _ = unsafe { host_log(format!("[TELEMETRY] Playback event for track {}: {}ms / {}ms (completed: {})", event.native_track_id, event.duration_ms, event.total_track_duration_ms, event.completed)) };
+
+    let req = HttpRequest {
+        method: "POST".to_string(),
+        url: "https://music.youtube.com/youtubei/v1/feedback".to_string(),
+        headers: None,
+        body: Some(serde_json::json!({
+            "feedbackTokens": [event.native_track_id],
+            "isAggregated": true
+        }).to_string()),
+    };
+    if let Ok(json_req) = serde_json::to_string(&req) {
+        let _ = unsafe { host_telemetry_request(json_req) };
+    }
+
+    Ok("ok".to_string())
 }
 
 #[cfg(test)]

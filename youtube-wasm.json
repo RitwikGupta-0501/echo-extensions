@@ -9,7 +9,10 @@
     "resolve",
     "explore",
     "warmup",
-    "url_resolver"
+    "url_resolver",
+    "related",
+    "radio",
+    "telemetry_reporting"
   ],
   "priority": 5,
   "icon": "lucide:box"
