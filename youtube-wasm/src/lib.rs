@@ -411,6 +411,242 @@ struct StsCache {
     timestamp_secs: u64,
 }
 
+const ZEMER_CONFIG_URL: &str = "https://raw.githubusercontent.com/ZemerTeam/zemer-cipher/master/library/src/main/assets/player_configs.json";
+const ZEMER_CONFIG_TTL_SECS: u64 = 6 * 60 * 60; // 6 hours, matching Metrolist
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZemerPlayerEntry {
+    pub sig: String,
+    #[serde(rename = "nClass")]
+    pub n_class: String,
+    pub sts: i64,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZemerConfigs {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub players: HashMap<String, ZemerPlayerEntry>,
+}
+
+pub fn get_embedded_player_configs() -> HashMap<String, ZemerPlayerEntry> {
+    let mut map = HashMap::new();
+    
+    // Recent validated configs from Zemer/Metrolist player_configs.json
+    map.insert("f572e43c".to_string(), ZemerPlayerEntry {
+        sig: "rY(18,3016,INPUT)".to_string(),
+        n_class: "um".to_string(),
+        sts: 20697,
+        aliases: vec!["8d57721e".to_string()],
+    });
+    map.insert("9470c977".to_string(), ZemerPlayerEntry {
+        sig: "Of(2,137,INPUT)".to_string(),
+        n_class: "wO".to_string(),
+        sts: 20696,
+        aliases: vec!["9f1ba9db".to_string()],
+    });
+    map.insert("4a9ed7b5".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["cc2d64e5".to_string()],
+    });
+    map.insert("95bf8a44".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["975af835".to_string()],
+    });
+    map.insert("fc590a67".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["c859a220".to_string()],
+    });
+    map.insert("1ceea3e8".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["319fe431".to_string()],
+    });
+    map.insert("ef64e108".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["05ad8578".to_string()],
+    });
+    map.insert("ce167ec0".to_string(), ZemerPlayerEntry {
+        sig: "dS(7,2166,INPUT)".to_string(),
+        n_class: "np".to_string(),
+        sts: 20699,
+        aliases: vec!["f8b6ed41".to_string()],
+    });
+    map.insert("259c7f44".to_string(), ZemerPlayerEntry {
+        sig: "WQ(14,8942,INPUT)".to_string(),
+        n_class: "ty".to_string(),
+        sts: 20698,
+        aliases: vec!["c01ca9bc".to_string()],
+    });
+    map.insert("10733253".to_string(), ZemerPlayerEntry {
+        sig: "dS(7,2166,INPUT)".to_string(),
+        n_class: "np".to_string(),
+        sts: 20699,
+        aliases: vec!["27a3833a".to_string()],
+    });
+    map.insert("3e7a0d91".to_string(), ZemerPlayerEntry {
+        sig: "mp(7,2166,INPUT)".to_string(),
+        n_class: "Ou".to_string(),
+        sts: 20699,
+        aliases: vec!["91e673b7".to_string()],
+    });
+    map.insert("a52cf1ce".to_string(), ZemerPlayerEntry {
+        sig: "mp(7,2166,INPUT)".to_string(),
+        n_class: "Ou".to_string(),
+        sts: 20699,
+        aliases: vec!["3f877f13".to_string()],
+    });
+    map.insert("38e8e189".to_string(), ZemerPlayerEntry {
+        sig: "jg(7,2166,INPUT)".to_string(),
+        n_class: "FB".to_string(),
+        sts: 20699,
+        aliases: vec!["d88e2876".to_string()],
+    });
+    map.insert("d109b9c2".to_string(), ZemerPlayerEntry {
+        sig: "jg(7,2166,INPUT)".to_string(),
+        n_class: "FB".to_string(),
+        sts: 20699,
+        aliases: vec!["f2db51af".to_string()],
+    });
+    map.insert("ab18ea88".to_string(), ZemerPlayerEntry {
+        sig: "Df(8,6565,INPUT)".to_string(),
+        n_class: "jm".to_string(),
+        sts: 20700,
+        aliases: vec!["1ba7d311".to_string()],
+    });
+    map.insert("1b29db7a".to_string(), ZemerPlayerEntry {
+        sig: "Df(8,6565,INPUT)".to_string(),
+        n_class: "jm".to_string(),
+        sts: 20700,
+        aliases: vec!["a41d7c8a".to_string()],
+    });
+    map.insert("b93b66db".to_string(), ZemerPlayerEntry {
+        sig: "QV(8,6565,INPUT)".to_string(),
+        n_class: "M7".to_string(),
+        sts: 20700,
+        aliases: vec!["488ab3ed".to_string()],
+    });
+    map.insert("e2a2364f".to_string(), ZemerPlayerEntry {
+        sig: "dE(8,6565,INPUT)".to_string(),
+        n_class: "sI".to_string(),
+        sts: 20700,
+        aliases: vec!["9bec666d".to_string()],
+    });
+    map.insert("9c249f6f".to_string(), ZemerPlayerEntry {
+        sig: "Tl(48,5831,INPUT)".to_string(),
+        n_class: "W_".to_string(),
+        sts: 20602,
+        aliases: vec!["a6fc27c5".to_string()],
+    });
+    map.insert("4f38b487".to_string(), ZemerPlayerEntry {
+        sig: "Tl(48,5831,INPUT)".to_string(),
+        n_class: "W_".to_string(),
+        sts: 20602,
+        aliases: vec!["1215646b".to_string()],
+    });
+    map.insert("1d81eac9".to_string(), ZemerPlayerEntry {
+        sig: "tq(1,8309,INPUT)".to_string(),
+        n_class: "Y_".to_string(),
+        sts: 20691,
+        aliases: vec!["a25c54c3".to_string()],
+    });
+    
+    map
+}
+
+pub fn fetch_and_cache_zemer_configs(force: bool) -> Option<ZemerConfigs> {
+    let now = get_unix_timestamp();
+    if !force {
+        if let Ok(cached_json) = get_storage("zemer_player_configs") {
+            if !cached_json.is_empty() {
+                let cached_time: u64 = get_storage("zemer_player_configs_time")
+                    .ok()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                if now >= cached_time && (now - cached_time) < ZEMER_CONFIG_TTL_SECS {
+                    if let Ok(configs) = serde_json::from_str::<ZemerConfigs>(&cached_json) {
+                        return Some(configs);
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = unsafe { host_log("[CIPHER] Fetching remote player configs from Zemer repository...".to_string()) };
+    let mut headers = HashMap::new();
+    headers.insert("User-Agent".to_string(), USER_AGENT.to_string());
+    if let Ok(resp) = do_http("GET", ZEMER_CONFIG_URL, Some(headers), None) {
+        if resp.status == 200 {
+            if let Ok(configs) = serde_json::from_str::<ZemerConfigs>(&resp.body) {
+                let _ = set_storage("zemer_player_configs", &resp.body);
+                let _ = set_storage("zemer_player_configs_time", &now.to_string());
+                let _ = unsafe { host_log(format!("[CIPHER] Loaded {} player configs from remote", configs.players.len())) };
+                return Some(configs);
+            }
+        }
+    }
+
+    if let Ok(cached_json) = get_storage("zemer_player_configs") {
+        if let Ok(configs) = serde_json::from_str::<ZemerConfigs>(&cached_json) {
+            let _ = unsafe { host_log("[CIPHER] Falling back to stale cached player configs".to_string()) };
+            return Some(configs);
+        }
+    }
+
+    None
+}
+
+pub fn get_player_config(player_hash: &str) -> Option<ZemerPlayerEntry> {
+    // 1. Try remote/cached Zemer configs (without force)
+    if let Some(configs) = fetch_and_cache_zemer_configs(false) {
+        if let Some(entry) = configs.players.get(player_hash) {
+            return Some(entry.clone());
+        }
+        for (_, entry) in &configs.players {
+            if entry.aliases.iter().any(|a| a == player_hash) {
+                return Some(entry.clone());
+            }
+        }
+    }
+
+    // 2. Try embedded configs before forcing network refresh
+    let embedded = get_embedded_player_configs();
+    if let Some(entry) = embedded.get(player_hash) {
+        return Some(entry.clone());
+    }
+    for (_, entry) in &embedded {
+        if entry.aliases.iter().any(|a| a == player_hash) {
+            return Some(entry.clone());
+        }
+    }
+
+    // 3. Force refresh remote configs (self-heal for new/rotated player hash)
+    let _ = unsafe { host_log(format!("[CIPHER] Player hash {} not found locally, forcing remote config refresh", player_hash)) };
+    if let Some(configs) = fetch_and_cache_zemer_configs(true) {
+        if let Some(entry) = configs.players.get(player_hash) {
+            return Some(entry.clone());
+        }
+        for (_, entry) in &configs.players {
+            if entry.aliases.iter().any(|a| a == player_hash) {
+                return Some(entry.clone());
+            }
+        }
+    }
+
+    None
+}
+
 fn extract_player_hash(content: &str) -> Option<String> {
     let markers = ["/s/player/", r"\/s\/player\/", "/player/", r"\/player\/"];
     for marker in markers {
@@ -526,6 +762,12 @@ fn fetch_player_js_and_sts(hash: &str) -> Option<(i64, String)> {
             if let Some(sts) = extract_signature_timestamp(&resp.body) {
                 return Some((sts, resp.body));
             }
+            if let Some(cfg) = get_player_config(hash) {
+                if cfg.sts > 10000 {
+                    let _ = unsafe { host_log(format!("[STS] Using signatureTimestamp {} from validated config for {}", cfg.sts, hash)) };
+                    return Some((cfg.sts, resp.body));
+                }
+            }
         }
     }
     None
@@ -582,8 +824,9 @@ fn deobfuscate_signature(obfuscated_s: &str, player_hash: &str) -> String {
     let decipher_script = format!(
         r#"(function() {{
             try {{
-                if (typeof window.__yt_sig_decipher === 'function') {{
-                    var res = window.__yt_sig_decipher('{escaped_s}');
+                var fn = window.__yt_sig_decipher || window._cipherSigFunc;
+                if (typeof fn === 'function') {{
+                    var res = fn('{escaped_s}');
                     if (typeof res === 'string' && res.length >= 10) {{
                         return res;
                     }}
@@ -596,11 +839,11 @@ fn deobfuscate_signature(obfuscated_s: &str, player_hash: &str) -> String {
     match unsafe { host_execute_webview_js(decipher_script) } {
         Ok(deciphered) => {
             let trimmed = deciphered.trim().trim_matches('"').to_string();
-            if !trimmed.is_empty() && trimmed.len() >= 10 {
-                let _ = unsafe { host_log(format!("[CIPHER] Successfully deciphered signature (len: {})", trimmed.len())) };
+            if !trimmed.is_empty() && trimmed.len() >= 10 && trimmed != obfuscated_s {
+                let _ = unsafe { host_log(format!("[CIPHER] Successfully deciphered signature: {} chars -> {} chars", obfuscated_s.len(), trimmed.len())) };
                 trimmed
             } else {
-                let _ = unsafe { host_log(format!("[CIPHER] Decipher returned invalid result: {}", trimmed)) };
+                let _ = unsafe { host_log(format!("[CIPHER] Decipher returned raw or invalid result (len: {})", trimmed.len())) };
                 obfuscated_s.to_string()
             }
         }
@@ -625,7 +868,7 @@ fn extract_n_param_from_url(url: &str) -> Option<String> {
 
 fn init_sandbox_player_js_if_needed(player_hash: &str) -> bool {
     let check_js = format!(
-        r#"typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{}';"#,
+        r#"typeof window.__yt_sig_decipher === 'function' && typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{}';"#,
         player_hash
     );
     if let Ok(res) = unsafe { host_execute_webview_js(check_js) } {
@@ -649,58 +892,70 @@ fn init_sandbox_player_js_if_needed(player_hash: &str) -> bool {
     };
 
     if player_js.is_empty() {
-        let _ = unsafe { host_log("[N-TRANSFORM] Could not retrieve player.js for init".to_string()) };
+        let _ = unsafe { host_log("[CIPHER] Could not retrieve player.js for sandbox init".to_string()) };
         return false;
     }
 
-    let _ = unsafe { host_log(format!("[N-TRANSFORM] Initializing player.js (length: {} chars) in JS Sandbox...", player_js.len())) };
+    let config = match get_player_config(player_hash) {
+        Some(c) => c,
+        None => {
+            let _ = unsafe { host_log(format!("[CIPHER] No validated cipher configuration found for player hash: {}", player_hash)) };
+            return false;
+        }
+    };
 
-    let player_js_quoted = serde_json::to_string(&player_js).unwrap_or_default(); let init_script = format!(
-        r#"(function() {{
+    let sig_expr = config.sig.replace("INPUT", "sig");
+    let n_class = &config.n_class;
+
+    let export_code = format!(
+        r#"; window.__yt_sig_decipher = window._cipherSigFunc = function(sig) {{
             try {{
-                if (typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{player_hash}') {{
-                    return 'ALREADY_READY';
-                }}
-                var playerJsStr = {player_js_quoted}; {player_js};
-                
-                var testInput = "KdrqFlzJXl9EcCwlmEy";
-                var nFunc = null;
-
-                var keys = Object.getOwnPropertyNames(window);
-                for (var i = 0; i < keys.length; i++) {{
-                    var k = keys[i];
-                    if (k.startsWith("webkit") || k.startsWith("on") || k.startsWith("__") || k === "window" || k === "self" || k === "bgVm" || k === "bgProgram") continue;
-                    try {{
-                        var fn = window[k];
-                        if (typeof fn === 'function' && fn.length === 1) {{
-                            var res = fn(testInput);
-                            if (typeof res === 'string' && res !== testInput && res.length >= 5 && /^[a-zA-Z0-9_-]+$/.test(res)) {{
-                                nFunc = fn;
-                                break;
-                            }}
-                        }}
-                    }} catch(e) {{}}
-                }}
-
-                if (nFunc) {{
-                    window.__yt_n_transform = nFunc;
-                    window.__yt_loaded_player_hash = '{player_hash}';
-                    return 'SUCCESS';
-                }}
-                return 'NO_N_FUNC';
+                return {sig_expr};
             }} catch(e) {{
-                return 'ERROR: ' + e;
+                return null;
             }}
-        }})()"#
+        }};
+        window.__yt_n_transform = window._nTransformFunc = function(n) {{
+            try {{
+                var u = new g.{n_class}('https://x.googlevideo.com/videoplayback?n=' + n, true);
+                var t = u.get('n');
+                return (t && t !== n) ? t : n;
+            }} catch(e) {{
+                return n;
+            }}
+        }};
+        window.__yt_loaded_player_hash = '{player_hash}';"#
     );
 
-    match unsafe { host_execute_webview_js(init_script) } {
-        Ok(res) => {
-            let _ = unsafe { host_log(format!("[N-TRANSFORM] Sandbox init result: {}", res)) };
-            res.contains("SUCCESS") || res.contains("ALREADY_READY")
+    // Injection point: insert export statements before closure closing '})(_yt_player);'
+    // Following Metrolist CipherWebView.kt implementation exactly
+    let modified_js = if player_js.contains("})(_yt_player);") {
+        player_js.replace("})(_yt_player);", &format!("{} }})(_yt_player);", export_code))
+    } else {
+        let _ = unsafe { host_log("[CIPHER] Closing closure marker '})(_yt_player);' not found, appending exports".to_string()) };
+        format!("{}
+{}", player_js, export_code)
+    };
+
+    let _ = unsafe { host_log(format!("[CIPHER] Initializing player.js (modified length: {} chars) with Zemer closure exports in JS Sandbox...", modified_js.len())) };
+
+    match unsafe { host_execute_webview_js(modified_js) } {
+        Ok(_) => {
+            let verify_js = format!(
+                r#"typeof window.__yt_sig_decipher === 'function' && typeof window.__yt_n_transform === 'function' && window.__yt_loaded_player_hash === '{}';"#,
+                player_hash
+            );
+            if let Ok(res) = unsafe { host_execute_webview_js(verify_js) } {
+                if res.trim() == "true" {
+                    let _ = unsafe { host_log(format!("[CIPHER] Sandbox verified and ready for player hash {}", player_hash)) };
+                    return true;
+                }
+            }
+            let _ = unsafe { host_log("[CIPHER] Sandbox verification check failed after eval".to_string()) };
+            false
         }
         Err(e) => {
-            let _ = unsafe { host_log(format!("[N-TRANSFORM] Sandbox init failed: {:?}", e)) };
+            let _ = unsafe { host_log(format!("[CIPHER] Sandbox evaluation error: {:?}", e)) };
             false
         }
     }
@@ -712,17 +967,19 @@ fn transform_n_param(raw_n: &str, player_hash: &str) -> String {
         return raw_n.to_string();
     }
 
+    let escaped_n = raw_n.replace('\\', "\\\\").replace('\'', "\\'");
     let transform_script = format!(
         r#"(function() {{
             try {{
-                if (typeof window.__yt_n_transform === 'function') {{
-                    var res = window.__yt_n_transform('{raw_n}');
-                    if (typeof res === 'string' && res.length >= 5 && /^[a-zA-Z0-9_-]+$/.test(res)) {{
+                var fn = window.__yt_n_transform || window._nTransformFunc;
+                if (typeof fn === 'function') {{
+                    var res = fn('{escaped_n}');
+                    if (typeof res === 'string' && res.length >= 5 && res !== '{escaped_n}') {{
                         return res;
                     }}
                 }}
             }} catch(e) {{}}
-            return '{raw_n}';
+            return '{escaped_n}';
         }})()"#
     );
 
@@ -755,7 +1012,6 @@ fn apply_n_transform_to_url(url: &str, player_hash: &str) -> String {
     }
     url.to_string()
 }
-
 
 fn get_or_refresh_sts() -> i64 {
     let now_secs = get_unix_timestamp();
@@ -4373,10 +4629,69 @@ mod tests {
             _ => panic!("Expected clean track"),
         }
     }
+
+    #[test]
+    fn test_embedded_player_configs() {
+        let configs = get_embedded_player_configs();
+        assert!(configs.contains_key("f572e43c"));
+        let entry = &configs["f572e43c"];
+        assert_eq!(entry.sig, "rY(18,3016,INPUT)");
+        assert_eq!(entry.n_class, "um");
+        assert_eq!(entry.sts, 20697);
+        assert!(entry.aliases.contains(&"8d57721e".to_string()));
+
+        // Test alias resolution via get_player_config
+        let resolved = get_player_config("8d57721e");
+        assert!(resolved.is_some());
+        let res_entry = resolved.unwrap();
+        assert_eq!(res_entry.sig, "rY(18,3016,INPUT)");
+        assert_eq!(res_entry.n_class, "um");
+    }
+
+    #[test]
+    fn test_zemer_player_config_parsing() {
+        let sample_json = r#"{
+            "schemaVersion": 1,
+            "players": {
+                "f572e43c": { "sig": "rY(18,3016,INPUT)", "nClass": "um", "sts": 20697, "aliases": ["8d57721e"] },
+                "9470c977": { "sig": "Of(2,137,INPUT)", "nClass": "wO", "sts": 20696, "aliases": ["9f1ba9db"] }
+            }
+        }"#;
+
+        let parsed = serde_json::from_str::<ZemerConfigs>(sample_json);
+        assert!(parsed.is_ok());
+        let configs = parsed.unwrap();
+        assert_eq!(configs.schema_version, 1);
+        assert_eq!(configs.players.len(), 2);
+        assert_eq!(configs.players["f572e43c"].n_class, "um");
+        assert_eq!(configs.players["f572e43c"].sig, "rY(18,3016,INPUT)");
+    }
+
+    #[test]
+    fn test_closure_injection_into_player_js() {
+        let fake_player = "var _yt_player={};(function(g){var window=this;g.um=function(url,b){return{get:function(k){return'transformed_n';}};};})(_yt_player);";
+        let config = ZemerPlayerEntry {
+            sig: "rY(18,3016,INPUT)".to_string(),
+            n_class: "um".to_string(),
+            sts: 20697,
+            aliases: vec![],
+        };
+        let sig_expr = config.sig.replace("INPUT", "sig");
+        let export_code = format!(
+            "; window.__yt_sig_decipher = function(sig) {{ return {}; }}; window.__yt_n_transform = function(n) {{ var u = new g.{}(n); return u.get('n'); }};",
+            sig_expr, config.n_class
+        );
+        let modified = fake_player.replace("})(_yt_player);", &format!("{} }})(_yt_player);", export_code));
+        assert!(modified.contains("window.__yt_sig_decipher = function(sig) { return rY(18,3016,sig); };"));
+        assert!(modified.contains("window.__yt_n_transform = function(n) { var u = new g.um(n); return u.get('n'); };"));
+        assert!(modified.ends_with("})(_yt_player);"));
+    }
 }
 
 
 fn get_unix_timestamp() -> u64 {
-    // Safe timestamp for wasm32-unknown-unknown target without OS clock syscalls
-    1700000000
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(1700000000)
 }
