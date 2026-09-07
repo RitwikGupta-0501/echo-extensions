@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (leave empty for "latest" or specify e.g. v1.0.0)'
+        required: false
+        default: 'latest'
 
 jobs:
   # Job 1: Auto-discover all Rust extensions
@@ -62,53 +67,93 @@ jobs:
 
       - name: Package Artifacts
         run: |
-          # Create staging folder for contents of this extension
-          mkdir -p staging/${{ matrix.extension }}
-          mkdir -p dist
+          # Create clean staging folder and dist directory
+          rm -rf "staging/${{ matrix.extension }}" dist
+          mkdir -p "staging/${{ matrix.extension }}" dist
           
-          # Copy compiled WASI binary
-          cp ${{ matrix.extension }}/target/wasm32-wasip1/release/*.wasm staging/${{ matrix.extension }}/
+          # 1. Copy compiled WASI binary normalized to <extension>.wasm
+          WASM_FILE=$(find "${{ matrix.extension }}/target/wasm32-wasip1/release" -maxdepth 1 -name "*.wasm" | head -n 1)
+          if [ -z "$WASM_FILE" ]; then
+            echo "Error: No compiled .wasm found in ${{ matrix.extension }}/target/wasm32-wasip1/release"
+            exit 1
+          fi
+          cp "$WASM_FILE" "staging/${{ matrix.extension }}/${{ matrix.extension }}.wasm"
           
-          # Copy manifest JSON if present
+          # 2. Copy manifest JSON
           if [ -f "${{ matrix.extension }}/manifest.json" ]; then
-            cp "${{ matrix.extension }}/manifest.json" staging/${{ matrix.extension }}/
+            cp "${{ matrix.extension }}/manifest.json" "staging/${{ matrix.extension }}/manifest.json"
           elif [ -f "${{ matrix.extension }}/${{ matrix.extension }}.json" ]; then
-            cp "${{ matrix.extension }}/${{ matrix.extension }}.json" staging/${{ matrix.extension }}/
+            cp "${{ matrix.extension }}/${{ matrix.extension }}.json" "staging/${{ matrix.extension }}/${{ matrix.extension }}.json"
           elif [ -f "${{ matrix.extension }}.json" ]; then
-            cp "${{ matrix.extension }}.json" staging/${{ matrix.extension }}/
+            cp "${{ matrix.extension }}.json" "staging/${{ matrix.extension }}/${{ matrix.extension }}.json"
+          else
+            echo "Error: No JSON manifest found for ${{ matrix.extension }}!"
+            exit 1
           fi
 
-          # Create bundled zip in dist/
-          cd staging/${{ matrix.extension }}
-          zip -r ../../dist/${{ matrix.extension }}.zip ./*
-          cd ../..
+          # 3. Create bundled zip containing directly the 2 files
+          (cd "staging/${{ matrix.extension }}" && python3 -m zipfile -c "../../dist/${{ matrix.extension }}.zip" *)
 
-      - name: Upload Build Artifacts
+          echo "Staged files in staging/${{ matrix.extension }}:"
+          ls -la "staging/${{ matrix.extension }}"
+          echo "Files in dist/${{ matrix.extension }}.zip:"
+          python3 -m zipfile -l "dist/${{ matrix.extension }}.zip"
+
+      # Upload unzipped files so downloading from GitHub Actions UI produces a clean zip with the 2 files
+      - name: Upload Extension Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.extension }}-wasi
-          path: dist/${{ matrix.extension }}.zip
+          name: ${{ matrix.extension }}
+          path: staging/${{ matrix.extension }}/*
           retention-days: 14
 
-  # Job 3: Publish GitHub Release when tagged
+      # Upload pre-bundled zip for the release job to publish
+      - name: Upload Release Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zip-${{ matrix.extension }}
+          path: dist/${{ matrix.extension }}.zip
+          retention-days: 1
+
+  # Job 3: Publish GitHub Release (runs on pushes to main, tags, and manual workflow_dispatch)
   release:
     name: Publish Release Assets
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download all release zips
         uses: actions/download-artifact@v4
         with:
+          pattern: release-zip-*
           path: release-assets
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Determine Release Tag
+        id: release-info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "title=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.tag_name }}" ]; then
+            echo "tag=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "title=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "title=Latest Extensions" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tag_name: ${{ steps.release-info.outputs.tag }}
+          name: ${{ steps.release-info.outputs.title }}
           files: release-assets/*.zip
           draft: false
           prerelease: false
           generate_release_notes: true
+          make_latest: true

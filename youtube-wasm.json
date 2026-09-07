@@ -15,5 +15,6 @@
     "telemetry_reporting"
   ],
   "priority": 5,
-  "icon": "lucide:box"
+  "icon": "lucide:box",
+  "description": "Stream and search audio, browse charts, and resolve tracks via YouTube Music."
 }
